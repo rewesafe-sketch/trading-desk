@@ -42,28 +42,57 @@
     return '';
   }
 
+  var DATA_PAGE = /\/d\/([^/]+)\/?(?:index\.html)?$/;
+
+  function hashRaw() {
+    return location.hash.charAt(0) === '#' ? location.hash.slice(1) : '';
+  }
+
+  function segmentFromPathname() {
+    var match = location.pathname.match(DATA_PAGE);
+    if (!match) return '';
+    try {
+      return decodeURIComponent(match[1]);
+    } catch (err) {
+      return match[1];
+    }
+  }
+
+  function siteBase() {
+    var path = location.pathname;
+    var match = path.match(DATA_PAGE);
+    if (match) path = path.slice(0, match.index + 1);
+    else path = path.replace(/index\.html$/, '');
+    if (!path) path = '/';
+    if (path.charAt(path.length - 1) !== '/') path += '/';
+    return path;
+  }
+
+  function resolveDataPath() {
+    var fromHash = readParam(hashRaw(), 'd');
+    if (fromHash) return fromHash;
+    var fromPage = segmentFromPathname();
+    if (fromPage) return fromPage;
+    return load(PATH_KEY);
+  }
+
   function readLaunchHash() {
     if (hashRead) return;
     hashRead = true;
-    var raw = location.hash.charAt(0) === '#' ? location.hash.slice(1) : '';
+    var raw = hashRaw();
     if (!raw) return;
-    var dataPath = readParam(raw, 'd');
     var token = readParam(raw, 't');
-    if (dataPath) store(PATH_KEY, dataPath);
-    if (token) {
-      store(TOKEN_KEY, token);
-      // Drop the token from the address bar. Keep #d= so Add to Home Screen
-      // saves a launch URL that still carries the desk path.
-      var kept = raw.split('&').filter(function (part) {
-        var key = part.split('=')[0] || '';
-        try {
-          key = decodeURIComponent(key);
-        } catch (err) {}
-        return key !== 't';
-      });
-      var next = location.pathname + location.search + (kept.length ? '#' + kept.join('&') : '');
-      history.replaceState(null, '', next);
-    }
+    if (!token) return;
+    store(TOKEN_KEY, token);
+    var kept = raw.split('&').filter(function (part) {
+      var key = part.split('=')[0] || '';
+      try {
+        key = decodeURIComponent(key);
+      } catch (err) {}
+      return key !== 't';
+    });
+    var next = location.pathname + location.search + (kept.length ? '#' + kept.join('&') : '');
+    history.replaceState(null, '', next);
   }
 
   function money(value) {
@@ -250,18 +279,18 @@
 
   function poll() {
     if (polling) return;
-    var path = load(PATH_KEY);
+    var path = activePath || load(PATH_KEY);
     if (!path) {
       showDisconnected();
       return;
     }
     polling = true;
-    var encoded = encodeURIComponent(path);
+    var root = siteBase() + 'd/' + encodeURIComponent(path) + '/';
     var bust = Date.now();
     Promise.all([
-      loadJson(`./d/${encoded}/state.json?v=${bust}`),
-      loadJson(`./d/${encoded}/chart.json?v=${bust}`),
-      loadJson(`./d/${encoded}/activity.json?v=${bust}`)
+      loadJson(root + 'state.json?v=' + bust),
+      loadJson(root + 'chart.json?v=' + bust),
+      loadJson(root + 'activity.json?v=' + bust)
     ]).then(function (parts) {
       renderState(parts[0]);
       if (chart) chart.setPoints(pointsOf(parts[1]));
@@ -309,13 +338,26 @@
     });
   }
 
+  function registerWorker() {
+    if (!('serviceWorker' in navigator)) return;
+    var script = segmentFromPathname() ? '../../sw.js' : './sw.js';
+    try {
+      navigator.serviceWorker.register(script).catch(function () {});
+    } catch (err) {}
+  }
+
   readLaunchHash();
+  var activePath = resolveDataPath();
+  if (activePath) store(PATH_KEY, activePath);
+  if (activePath && !window.navigator.standalone && segmentFromPathname() !== activePath) {
+    location.replace(siteBase() + 'd/' + encodeURIComponent(activePath) + '/');
+    return;
+  }
+
   chart = new DeskChart(document.getElementById('chart'), document.getElementById('chart-empty'));
   bindTabs();
   updateAccount('PAPER');
   poll();
   setInterval(poll, POLL_MS);
-  if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('./sw.js').catch(function () {});
-  }
+  registerWorker();
 })();

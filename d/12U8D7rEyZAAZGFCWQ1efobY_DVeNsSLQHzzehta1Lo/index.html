@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#000">
+  <meta name="description" content="Paper trading desk">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Desk">
+  <title>Trading Desk</title>
+  <link rel="apple-touch-icon" href="../../icons/icon-180.png">
+  <link rel="icon" href="../../icons/icon-192.png" type="image/png">
+  <link rel="stylesheet" href="../../app.css">
+</head>
+<body>
+  <div class="app">
+    <header class="top">
+      <h1 class="wordmark">Desk</h1>
+      <span class="pill" id="mode-pill">PAPER</span>
+    </header>
+    <main>
+      <section class="panel" id="panel-home" role="tabpanel" aria-labelledby="tab-home">
+        <p class="eyebrow">Balance</p>
+        <p class="balance nums" id="balance">—</p>
+        <p class="sub" id="balance-sub">Paper balance</p>
+        <section class="card chart-card">
+          <div class="chart-head">
+            <span class="card-title">Equity</span>
+            <span class="live" id="live-flag"><span class="live-dot" aria-hidden="true"></span>LIVE</span>
+          </div>
+          <div class="chart-wrap">
+            <canvas id="chart" aria-label="Equity chart"></canvas>
+            <p class="empty" id="chart-empty" hidden>Waiting for the first trade</p>
+          </div>
+        </section>
+        <p class="footnote nums" id="status-line"></p>
+      </section>
+
+      <section class="panel" id="panel-agents" role="tabpanel" aria-labelledby="tab-agents" hidden>
+        <h2 class="panel-title">Agents</h2>
+        <div id="agent-list"></div>
+      </section>
+
+      <section class="panel" id="panel-activity" role="tabpanel" aria-labelledby="tab-activity" hidden>
+        <h2 class="panel-title">Activity</h2>
+        <div id="activity-list"></div>
+      </section>
+
+      <section class="panel" id="panel-account" role="tabpanel" aria-labelledby="tab-account" hidden>
+        <h2 class="panel-title">Account</h2>
+        <div class="card settings">
+          <div class="set-row"><span>Mode</span><span class="nums" id="acct-mode">PAPER</span></div>
+          <div class="set-row"><span>Desk link</span><span id="acct-link">Not connected</span></div>
+          <div class="set-row"><span>Token</span><span id="acct-token">Not set</span></div>
+          <div class="set-row"><span>Refresh</span><span class="nums">15s</span></div>
+        </div>
+      </section>
+    </main>
+    <nav class="tabbar" role="tablist" aria-label="Sections">
+      <button class="tab" type="button" role="tab" id="tab-home" aria-controls="panel-home" aria-selected="true">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1z"/></svg>
+        <span>Home</span>
+      </button>
+      <button class="tab" type="button" role="tab" id="tab-agents" aria-controls="panel-agents" aria-selected="false" tabindex="-1">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M8 11a3 3 0 1 0-3-3 3 3 0 0 0 3 3zm8 0a2.5 2.5 0 1 0-2.5-2.5A2.5 2.5 0 0 0 16 11zM8 13c-2.8 0-5 1.5-5 3.5V19h10v-2.5C13 14.5 10.8 13 8 13zm8 .5c-.4 0-.9 0-1.3.1 1.4.8 2.3 1.9 2.3 3.2V19H21v-2.2c0-1.8-2.1-3.3-5-3.3z"/></svg>
+        <span>Agents</span>
+      </button>
+      <button class="tab" type="button" role="tab" id="tab-activity" aria-controls="panel-activity" aria-selected="false" tabindex="-1">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M5 6h14v2H5zm0 5h14v2H5zm0 5h10v2H5z"/></svg>
+        <span>Activity</span>
+      </button>
+      <button class="tab" type="button" role="tab" id="tab-account" aria-controls="panel-account" aria-selected="false" tabindex="-1">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4zm0 2c-3.3 0-8 1.7-8 5v1h16v-1c0-3.3-4.7-5-8-5z"/></svg>
+        <span>Account</span>
+      </button>
+    </nav>
+  </div>
+  <noscript><p class="footnote">JavaScript is required to load the desk.</p></noscript>
+  <script src="../../chart.js" defer></script>
+  <script src="../../app.js?v=3" defer></script>
+</body>
+</html>
