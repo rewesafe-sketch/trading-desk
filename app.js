@@ -50,9 +50,19 @@
     var dataPath = readParam(raw, 'd');
     var token = readParam(raw, 't');
     if (dataPath) store(PATH_KEY, dataPath);
-    if (token) store(TOKEN_KEY, token);
-    if (dataPath || token) {
-      history.replaceState(null, '', location.pathname + location.search);
+    if (token) {
+      store(TOKEN_KEY, token);
+      // Drop the token from the address bar. Keep #d= so Add to Home Screen
+      // saves a launch URL that still carries the desk path.
+      var kept = raw.split('&').filter(function (part) {
+        var key = part.split('=')[0] || '';
+        try {
+          key = decodeURIComponent(key);
+        } catch (err) {}
+        return key !== 't';
+      });
+      var next = location.pathname + location.search + (kept.length ? '#' + kept.join('&') : '');
+      history.replaceState(null, '', next);
     }
   }
 
