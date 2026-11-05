@@ -1,84 +1,137 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#000">
-  <meta name="description" content="Paper trading desk">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="apple-mobile-web-app-title" content="Desk">
-  <title>Trading Desk</title>
-  <link rel="apple-touch-icon" href="../../icons/icon-180.png">
-  <link rel="icon" href="../../icons/icon-192.png" type="image/png">
-  <link rel="stylesheet" href="../../app.css">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="theme-color" content="#000000" />
+  <link rel="apple-touch-icon" href="../../icons/apple-touch-icon.png" />
+  <link rel="manifest" href="../../manifest.json" />
+  <title>Grok Bot</title>
+  <link rel="stylesheet" href="../../app.css?v=4" />
 </head>
 <body>
-  <div class="app">
-    <header class="top">
-      <h1 class="wordmark">Desk</h1>
-      <span class="pill" id="mode-pill">PAPER</span>
-    </header>
-    <main>
-      <section class="panel" id="panel-home" role="tabpanel" aria-labelledby="tab-home">
-        <p class="eyebrow">Balance</p>
-        <p class="balance nums" id="balance">—</p>
-        <p class="sub" id="balance-sub">Paper balance</p>
-        <section class="card chart-card">
-          <div class="chart-head">
-            <span class="card-title">Equity</span>
-            <span class="live" id="live-flag"><span class="live-dot" aria-hidden="true"></span>LIVE</span>
-          </div>
-          <div class="chart-wrap">
-            <canvas id="chart" aria-label="Equity chart"></canvas>
-            <p class="empty" id="chart-empty" hidden>Waiting for the first trade</p>
-          </div>
-        </section>
-        <p class="footnote nums" id="status-line"></p>
-      </section>
+  <div id="app">
+    <div id="error-bar" role="status"></div>
 
-      <section class="panel" id="panel-agents" role="tabpanel" aria-labelledby="tab-agents" hidden>
-        <h2 class="panel-title">Agents</h2>
-        <div id="agent-list"></div>
-      </section>
-
-      <section class="panel" id="panel-activity" role="tabpanel" aria-labelledby="tab-activity" hidden>
-        <h2 class="panel-title">Activity</h2>
-        <div id="activity-list"></div>
-      </section>
-
-      <section class="panel" id="panel-account" role="tabpanel" aria-labelledby="tab-account" hidden>
-        <h2 class="panel-title">Account</h2>
-        <div class="card settings">
-          <div class="set-row"><span>Mode</span><span class="nums" id="acct-mode">PAPER</span></div>
-          <div class="set-row"><span>Desk link</span><span id="acct-link">Not connected</span></div>
-          <div class="set-row"><span>Token</span><span id="acct-token">Not set</span></div>
-          <div class="set-row"><span>Refresh</span><span class="nums">15s</span></div>
+    <!-- HOME -->
+    <section class="screen active" data-tab="home" id="screen-home">
+      <div class="navbar">
+        <button type="button" class="nav-avatar" id="nav-avatar" aria-label="Account">GB</button>
+        <button type="button" class="nav-title" id="nav-title">Grok Bot <span class="chev">›</span></button>
+        <input class="nav-search" id="nav-search" type="search" placeholder="Search name, symbol, mint" enterkeyhint="search" />
+        <button type="button" class="nav-icon" id="nav-bell" aria-label="Notifications">🔔<span class="bell-dot" id="bell-dot"></span></button>
+      </div>
+      <div class="screen-scroll">
+        <div class="balance-row">
+          <div class="balance-odometer tabular" id="balance-odometer">—</div>
+          <span class="paper-pill" id="paper-pill-home">PAPER</span>
         </div>
-      </section>
-    </main>
-    <nav class="tabbar" role="tablist" aria-label="Sections">
-      <button class="tab" type="button" role="tab" id="tab-home" aria-controls="panel-home" aria-selected="true">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1z"/></svg>
-        <span>Home</span>
-      </button>
-      <button class="tab" type="button" role="tab" id="tab-agents" aria-controls="panel-agents" aria-selected="false" tabindex="-1">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M8 11a3 3 0 1 0-3-3 3 3 0 0 0 3 3zm8 0a2.5 2.5 0 1 0-2.5-2.5A2.5 2.5 0 0 0 16 11zM8 13c-2.8 0-5 1.5-5 3.5V19h10v-2.5C13 14.5 10.8 13 8 13zm8 .5c-.4 0-.9 0-1.3.1 1.4.8 2.3 1.9 2.3 3.2V19H21v-2.2c0-1.8-2.1-3.3-5-3.3z"/></svg>
-        <span>Agents</span>
-      </button>
-      <button class="tab" type="button" role="tab" id="tab-activity" aria-controls="panel-activity" aria-selected="false" tabindex="-1">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M5 6h14v2H5zm0 5h14v2H5zm0 5h10v2H5z"/></svg>
-        <span>Activity</span>
-      </button>
-      <button class="tab" type="button" role="tab" id="tab-account" aria-controls="panel-account" aria-selected="false" tabindex="-1">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4zm0 2c-3.3 0-8 1.7-8 5v1h16v-1c0-3.3-4.7-5-8-5z"/></svg>
-        <span>Account</span>
-      </button>
+        <div class="today-row">
+          <span id="today-pct" class="tabular">—</span>
+          <span class="mult-pill tabular" id="mult-pill">—×</span>
+        </div>
+        <div class="chart-wrap">
+          <div class="chart-empty" id="chart-empty">Waiting for the first trade</div>
+          <canvas id="home-chart"></canvas>
+          <div class="range-switch">
+            <button type="button" data-range="LIVE" class="on">LIVE</button>
+            <button type="button" data-range="1H">1H</button>
+            <button type="button" data-range="4H">4H</button>
+            <button type="button" data-range="1D">1D</button>
+            <button type="button" data-range="1W">1W</button>
+            <button type="button" data-range="ALL">ALL</button>
+          </div>
+        </div>
+        <div class="section-head"><span id="agents-heading">Agents · 5 running</span></div>
+        <div class="agent-carousel" id="agent-carousel"></div>
+        <div class="section-head">
+          <span>Activity</span>
+          <button type="button" class="link" id="see-all-activity">See all</button>
+        </div>
+        <div id="home-activity"></div>
+      </div>
+    </section>
+
+    <!-- AGENTS -->
+    <section class="screen" data-tab="agents" id="screen-agents">
+      <div class="navbar"><div class="nav-title">Agents</div></div>
+      <div class="screen-scroll" id="agents-list"></div>
+    </section>
+
+    <!-- ACTIVITY -->
+    <section class="screen" data-tab="activity" id="screen-activity">
+      <div class="navbar"><div class="nav-title">Activity</div></div>
+      <div class="screen-scroll" id="activity-list"></div>
+    </section>
+
+    <!-- ACCOUNT -->
+    <section class="screen" data-tab="account" id="screen-account">
+      <div class="navbar"><div class="nav-title">Account</div></div>
+      <div class="screen-scroll">
+        <div class="note-box" id="planb-settings-note">Settings are read-only here. Change them via Telegram.</div>
+        <div class="acct-card">
+          <div class="acct-row">
+            <span class="label">Mode</span>
+            <div class="mode-seg" id="acct-mode"><span class="on">PAPER</span><span>LIVE</span></div>
+          </div>
+          <div class="acct-row">
+            <span class="label">Stack</span>
+            <span class="value tabular" id="acct-stack">—</span>
+          </div>
+        </div>
+        <div class="acct-card">
+          <a class="acct-row" id="acct-profile" href="#" target="_blank" rel="noopener">
+            <span class="label">Your FOMO profile</span>
+            <span><span class="value"></span> <span class="chev">›</span></span>
+          </a>
+          <button type="button" class="acct-row" id="acct-invite">
+            <span class="label">Invite a friend</span>
+            <span class="value">Share</span>
+          </button>
+        </div>
+        <div class="acct-card">
+          <div class="acct-row">
+            <span class="label">Telegram</span>
+            <span class="value" id="acct-telegram">—</span>
+          </div>
+          <div class="acct-row">
+            <span class="label">Notifications</span>
+            <span class="value" id="web-push-note" style="max-width:60%;text-align:right;font-size:12px">Telegram only</span>
+          </div>
+        </div>
+        <div class="section-head"><span>Settings</span></div>
+        <div id="settings-groups"></div>
+      </div>
+    </section>
+
+    <!-- COIN overlay -->
+    <div class="overlay-screen" id="coin-overlay">
+      <div class="navbar">
+        <button type="button" class="nav-back" id="coin-back" aria-label="Back">‹</button>
+        <div class="nav-title">Coin</div>
+      </div>
+      <div id="coin-body" style="flex:1;min-height:0;display:flex;flex-direction:column"></div>
+    </div>
+
+    <!-- AUDIT overlay -->
+    <div class="overlay-screen" id="audit-overlay">
+      <div class="navbar">
+        <button type="button" class="nav-back" id="audit-back" aria-label="Back">‹</button>
+        <div class="nav-title">Auditor</div>
+      </div>
+      <div id="audit-body" style="flex:1;min-height:0;display:flex;flex-direction:column"></div>
+    </div>
+
+    <nav class="tabbar" aria-label="Tabs">
+      <button type="button" data-tab="home" class="on"><span class="tab-ico">⌂</span>Home</button>
+      <button type="button" data-tab="agents"><span class="tab-ico">◎</span>Agents</button>
+      <button type="button" data-tab="activity"><span class="tab-ico">☰</span>Activity</button>
+      <button type="button" data-tab="account"><span class="tab-ico">☺</span>Account</button>
     </nav>
   </div>
-  <noscript><p class="footnote">JavaScript is required to load the desk.</p></noscript>
-  <script src="../../chart.js" defer></script>
-  <script src="../../app.js?v=3" defer></script>
+  <script src="../../chart.js?v=4"></script>
+  <script src="../../app.js?v=4"></script>
 </body>
 </html>

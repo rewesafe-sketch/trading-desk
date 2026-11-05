@@ -1,363 +1,680 @@
+/* Grok Bot trading desk — plan B. Data from R2 (or same-origin on localhost). No secrets. */
 (function () {
-  var POLL_MS = 15000;
-  var PATH_KEY = 'desk_data_path';
-  var TOKEN_KEY = 'APP_TOKEN';
-  var chart = null;
-  var polling = false;
-  var hashRead = false;
+  'use strict';
 
-  var tabs = [
-    { id: 'home', tab: 'tab-home', panel: 'panel-home' },
-    { id: 'agents', tab: 'tab-agents', panel: 'panel-agents' },
-    { id: 'activity', tab: 'tab-activity', panel: 'panel-activity' },
-    { id: 'account', tab: 'tab-account', panel: 'panel-account' }
-  ];
+  const ASSET_V = '4';
+  const R2_PUBLIC = 'https://pub-67fc5fdcfd5b42d7a94ba3a2ed6cf5ae.r2.dev';
+  const POLL_MS = 15000;
+  const LS_PATH = 'desk_data_path';
+  const LS_UNREAD = 'desk_unread_pushes';
 
-  function store(key, value) {
-    try {
-      localStorage.setItem(key, value);
-    } catch (err) {}
+  const state = {
+    path: null,
+    dataBase: null,
+    state: null,
+    chart: null,
+    activity: null,
+    account: null,
+    events: null,
+    agents: {},
+    range: 'LIVE',
+    tab: 'home',
+    lastOkAt: null,
+    offline: false,
+    retryIn: 5,
+    search: '',
+  };
+
+  const $ = (sel, el) => (el || document).querySelector(sel);
+  const $$ = (sel, el) => Array.from((el || document).querySelectorAll(sel));
+
+  function isLocalHost() {
+    const h = location.hostname;
+    return h === 'localhost' || h === '127.0.0.1' || h === '0.0.0.0';
   }
 
-  function load(key) {
-    try {
-      return localStorage.getItem(key) || '';
-    } catch (err) {
-      return '';
+  /** Resolve DATA_PATH: pathname /trading-desk/d/<path>/ → #d= → localStorage */
+  function resolvePath() {
+    const parts = location.pathname.split('/').filter(Boolean);
+    // expect …/trading-desk/d/<path>/ or …/d/<path>/
+    const di = parts.indexOf('d');
+    if (di >= 0 && parts[di + 1] && parts[di + 1] !== '__PATH__') {
+      return parts[di + 1];
     }
+    const hash = new URLSearchParams((location.hash || '').replace(/^#/, ''));
+    if (hash.get('d')) return hash.get('d');
+    try { return localStorage.getItem(LS_PATH); } catch (_) { return null; }
   }
 
-  function readParam(raw, name) {
-    var bits = raw.split('&');
-    for (var i = 0; i < bits.length; i++) {
-      var pair = bits[i].split('=');
-      if (decodeURIComponent(pair[0] || '') !== name) continue;
-      var value = pair.slice(1).join('=');
-      try {
-        return decodeURIComponent(value);
-      } catch (err) {
-        return value;
+  function persistPath(p) {
+    try { localStorage.setItem(LS_PATH, p); } catch (_) {}
+  }
+
+  /** Root launcher: #d= → /trading-desk/d/<path>/ */
+  function maybeRedirectFromRoot() {
+    const onPathPage = /\/d\/[^/]+\/?$/.test(location.pathname) || /\/d\/[^/]+\/index\.html$/.test(location.pathname);
+    if (onPathPage) return false;
+    const hash = new URLSearchParams((location.hash || '').replace(/^#/, ''));
+    const d = hash.get('d') || (function () { try { return localStorage.getItem(LS_PATH); } catch (_) { return null; } })();
+    if (!d) return false;
+    persistPath(d);
+    // Build /trading-desk/d/<path>/ under current origin
+    let base = location.pathname;
+    if (!base.endsWith('/')) base = base.replace(/[^/]+$/, '');
+    // if at /trading-desk/ or /trading-desk/index.html
+    if (!/\/trading-desk\/?$/.test(location.pathname) && !location.pathname.endsWith('/trading-desk/index.html')) {
+      // local proof may serve from /
+      const target = `/d/${encodeURIComponent(d)}/`;
+      location.replace(target);
+      return true;
+    }
+    location.replace(`/trading-desk/d/${encodeURIComponent(d)}/`);
+    return true;
+  }
+
+  function dataBaseFor(path) {
+    if (isLocalHost()) {
+      // same-origin mirror for proof / local
+      return `${location.origin}/d/${path}/`;
+    }
+    return `${R2_PUBLIC}/d/${path}/`;
+  }
+
+  async function fetchJson(rel) {
+    const url = state.dataBase + rel.replace(/^\//, '');
+    const res = await fetch(url, { cache: 'no-store', mode: 'cors' });
+    if (!res.ok) throw new Error(String(res.status));
+    return res.json();
+  }
+
+  function fmtMoney(n) {
+    if (n == null || Number.isNaN(n)) return '—';
+    const abs = Math.abs(n);
+    const s = abs.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return (n < 0 ? '-$' : '$') + s;
+  }
+
+  function fmtPct(n, signed) {
+    if (n == null || Number.isNaN(n)) return '—';
+    const s = Math.abs(n).toFixed(2) + '%';
+    if (!signed) return s;
+    return (n >= 0 ? '+' : '−') + s;
+  }
+
+  function fmtTime(iso) {
+    if (!iso) return '';
+    try {
+      const d = new Date(iso);
+      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    } catch (_) { return ''; }
+  }
+
+  function setOdometer(el, value) {
+    if (!el) return;
+    const text = fmtMoney(value);
+    if (window.DeskCharts && DeskCharts.prefersReduced()) {
+      el.textContent = text;
+      return;
+    }
+    // simple digit roll: replace content with spans
+    const prev = el.dataset.v || '';
+    el.dataset.v = text;
+    if (prev === text) { el.textContent = text; return; }
+    el.textContent = '';
+    const chars = text.split('');
+    chars.forEach((ch, i) => {
+      if (!/[0-9]/.test(ch)) {
+        el.appendChild(document.createTextNode(ch));
+        return;
       }
-    }
-    return '';
-  }
-
-  var DATA_PAGE = /\/d\/([^/]+)\/?(?:index\.html)?$/;
-
-  function hashRaw() {
-    return location.hash.charAt(0) === '#' ? location.hash.slice(1) : '';
-  }
-
-  function segmentFromPathname() {
-    var match = location.pathname.match(DATA_PAGE);
-    if (!match) return '';
-    try {
-      return decodeURIComponent(match[1]);
-    } catch (err) {
-      return match[1];
-    }
-  }
-
-  function siteBase() {
-    var path = location.pathname;
-    var match = path.match(DATA_PAGE);
-    if (match) path = path.slice(0, match.index + 1);
-    else path = path.replace(/index\.html$/, '');
-    if (!path) path = '/';
-    if (path.charAt(path.length - 1) !== '/') path += '/';
-    return path;
-  }
-
-  function resolveDataPath() {
-    var fromHash = readParam(hashRaw(), 'd');
-    if (fromHash) return fromHash;
-    var fromPage = segmentFromPathname();
-    if (fromPage) return fromPage;
-    return load(PATH_KEY);
-  }
-
-  function readLaunchHash() {
-    if (hashRead) return;
-    hashRead = true;
-    var raw = hashRaw();
-    if (!raw) return;
-    var token = readParam(raw, 't');
-    if (!token) return;
-    store(TOKEN_KEY, token);
-    var kept = raw.split('&').filter(function (part) {
-      var key = part.split('=')[0] || '';
-      try {
-        key = decodeURIComponent(key);
-      } catch (err) {}
-      return key !== 't';
+      const wrap = document.createElement('span');
+      wrap.className = 'odometer-digit';
+      const inner = document.createElement('span');
+      inner.textContent = ch;
+      const delay = (chars.length - i) * 30;
+      inner.style.transitionDelay = delay + 'ms';
+      wrap.appendChild(inner);
+      el.appendChild(wrap);
+      requestAnimationFrame(() => {
+        inner.style.transform = 'translateY(0)';
+      });
     });
-    var next = location.pathname + location.search + (kept.length ? '#' + kept.join('&') : '');
-    history.replaceState(null, '', next);
   }
 
-  function money(value) {
-    var n = Number(value);
-    if (!isFinite(n)) return '—';
-    return n.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+  function showError(show) {
+    const bar = $('#error-bar');
+    if (!bar) return;
+    if (!show) { bar.classList.remove('show'); return; }
+    const t = state.lastOkAt ? fmtTime(state.lastOkAt) : '—';
+    bar.textContent = `Desk offline · retrying in ${state.retryIn}s · last update ${t}`;
+    bar.classList.add('show');
   }
 
-  function signedMoney(value) {
-    var n = Number(value);
-    if (!isFinite(n)) return '';
-    var body = money(Math.abs(n));
-    if (n > 0) return '+' + body;
-    if (n < 0) return '−' + body;
-    return body;
+  function paperBadge(on) {
+    $$('.paper-pill').forEach((el) => el.classList.toggle('hidden', !on));
   }
 
-  function whenLabel(value) {
-    if (value == null || value === '') return '';
-    if (typeof value === 'number' || /^\d+$/.test(String(value))) {
-      var n = Number(value);
-      if (!isFinite(n)) return '';
-      var ms = n < 1e12 ? n * 1000 : n;
-      var date = new Date(ms);
-      if (isNaN(date.getTime())) return '';
-      return date.toLocaleString('en-US', {
-        month: 'short',
-        day: 'numeric',
-        hour: 'numeric',
-        minute: '2-digit'
+  /* ---------- renderers ---------- */
+
+  function renderHome() {
+    const s = state.state;
+    if (!s) return;
+    paperBadge(s.mode === 'PAPER');
+    setOdometer($('#balance-odometer'), s.balance);
+    const today = $('#today-pct');
+    if (today) {
+      today.textContent = fmtPct(s.today_pct, true);
+      today.className = 'tabular ' + (s.today_pct >= 0 ? 'today-up' : 'today-down');
+    }
+    const mult = $('#mult-pill');
+    if (mult) mult.textContent = (s.multiplier != null ? Number(s.multiplier).toFixed(2) : '—') + '×';
+
+    const chartEmpty = $('#chart-empty');
+    const pts = (state.chart && state.chart.points) || [];
+    if (chartEmpty) chartEmpty.style.display = pts.length ? 'none' : 'flex';
+    if (window.DeskCharts) {
+      DeskCharts.drawHomeLine($('#home-chart'), {
+        points: pts,
+        marks: (state.chart && state.chart.marks) || [],
+        startValue: state.chart ? state.chart.start_value : s.balance,
       });
     }
-    return String(value);
+
+    // agent carousel
+    const car = $('#agent-carousel');
+    if (car && s.agents) {
+      car.innerHTML = '';
+      ['scanner', 'auditor', 'analyst', 'executor', 'risk'].forEach((name) => {
+        car.appendChild(buildAgentCard(name, s.agents[name], s.settings || {}));
+      });
+    }
+
+    // activity preview
+    const list = $('#home-activity');
+    if (list) {
+      const rows = ((state.activity && state.activity.rows) || []).slice(0, 5);
+      list.innerHTML = '';
+      if (!rows.length) {
+        list.innerHTML = '<div class="empty-note">Nothing yet tonight</div>';
+      } else {
+        rows.forEach((r) => list.appendChild(buildActRow(r)));
+      }
+    }
+
+    const running = Object.values(s.paused || {}).filter((p) => !p).length;
+    const ah = $('#agents-heading');
+    if (ah) ah.textContent = `Agents · ${running || 5} running`;
   }
 
-  function statusKind(status) {
-    var key = String(status || '').toLowerCase();
-    if (key === 'run' || key === 'running' || key === 'live' || key === 'active') return 'run';
-    if (key === 'error' || key === 'halt' || key === 'halted' || key === 'stopped' || key === 'fail' || key === 'failed') return 'bad';
-    if (key === 'idle' || key === 'wait' || key === 'waiting' || key === 'paused') return 'idle';
-    return '';
+  function buildAgentCard(name, a, settings) {
+    a = a || {};
+    const el = document.createElement('button');
+    el.type = 'button';
+    el.className = 'agent-card';
+    el.dataset.agent = name;
+    const accent = a.color || '#64d2ff';
+    let body = '';
+    if (name === 'scanner') {
+      const feed = (a.feed || []).slice(0, 6).map((f) => {
+        const killed = f.verdict === 'kill';
+        return `<div class="feed-row ${killed ? 'killed' : ''}"><span class="feed-name">${esc(f.text || f.name || '')}</span>` +
+          (killed ? `<span class="feed-reason">${esc(f.reason || '')}</span>` : '') + `</div>`;
+      }).join('') || `<div class="empty-note">Listening for graduations</div>`;
+      body = `<div class="ac-feed">${feed}</div>`;
+    } else if (name === 'auditor') {
+      const strips = [];
+      for (let i = 1; i <= 8; i++) {
+        const L = (a.layers || []).find((x) => x.n === i);
+        let cls = 'pending';
+        if (L && L.pass === true) cls = 'pass';
+        if (L && L.pass === false) cls = 'fail';
+        strips.push(`<div class="layer-strip ${cls}"></div>`);
+      }
+      body = `<div class="layer-grid">${strips.join('')}</div>
+        <div style="color:var(--secondary);font-size:13px">${esc(a.status_text || 'idle')}</div>
+        <div style="color:var(--secondary);font-size:13px">${a.rejected || 0} rejected</div>`;
+    } else if (name === 'analyst') {
+      body = `<div class="score-ring-wrap"><canvas id="score-ring-home" width="120" height="120"></canvas></div>`;
+    } else if (name === 'executor') {
+      const pct = (a.bar && a.bar.pct) || 0;
+      body = `<div style="color:var(--secondary);font-size:14px">${esc(a.size_label || '')}</div>
+        <div class="exec-bar"><span style="width:${pct}%"></span></div>
+        <div style="font-size:13px;color:var(--secondary)">${esc((a.bar && a.bar.text) || '')}</div>`;
+    } else if (name === 'risk') {
+      const stop = (a.pills && a.pills.stop_text) || `stop -${(settings.stop_pct != null ? settings.stop_pct : 6)}%`;
+      const trail = (a.pills && a.pills.trail_text) || `trail ${(settings.trail_pct != null ? settings.trail_pct : 12)}%`;
+      body = `<div style="color:var(--secondary);font-size:14px">${esc(a.last_exit || '')}</div>
+        <div class="risk-pills"><span class="pill pill-stop">${esc(stop)}</span><span class="pill pill-trail">${esc(trail)}</span></div>`;
+    }
+    el.innerHTML = `
+      <div class="ac-top"><span class="ac-name">${esc(a.name || name)}</span><span class="ac-accent" style="background:${accent}"></span></div>
+      <div class="ac-label">${esc(a.label || '')}</div>
+      ${body}`;
+    el.addEventListener('click', () => openAgentsTab(name));
+    if (name === 'analyst') {
+      requestAnimationFrame(() => {
+        const c = el.querySelector('canvas');
+        if (c && window.DeskCharts) DeskCharts.drawScoreRing(c, a.score, a.ring_green_from || 70);
+      });
+    }
+    return el;
   }
 
-  function setLive(mode) {
-    var flag = document.getElementById('live-flag');
-    flag.classList.toggle('on', mode === 'on');
-    flag.classList.toggle('bad', mode === 'bad');
+  function buildActRow(r) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'act-row';
+    btn.innerHTML = `<div class="act-main"><div class="act-title">${esc(r.title || '')}</div>
+      <div class="act-sub">${esc(r.subtitle || '')}</div></div>
+      <div class="act-val tabular">${esc(r.value || '')}</div>`;
+    btn.addEventListener('click', () => {
+      if (!r.mint) return;
+      if (r.kind === 'rejected') openAudit(r.mint);
+      else openCoin(r.mint);
+    });
+    return btn;
   }
 
-  function setStatus(text, warn) {
-    var line = document.getElementById('status-line');
-    line.textContent = text;
-    line.classList.toggle('warn', !!warn);
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
-  function clock() {
-    return new Date().toLocaleTimeString('en-US', {
-      hour: 'numeric',
-      minute: '2-digit',
-      second: '2-digit'
+  function renderAgents() {
+    const root = $('#agents-list');
+    if (!root || !state.state) return;
+    root.innerHTML = '';
+    const order = ['scanner', 'auditor', 'analyst', 'executor', 'risk'];
+    const paused = state.state.paused || {};
+    const cards = state.state.agents || {};
+    const riskLocked = cards.risk && cards.risk.pause_locked;
+    order.forEach((name) => {
+      const a = cards[name] || {};
+      const dec = (state.agents[name] && state.agents[name].decisions) || [];
+      const card = document.createElement('div');
+      card.className = 'agent-full';
+      card.id = 'agent-full-' + name;
+      const isPaused = !!paused[name];
+      const lock = name === 'risk' && riskLocked;
+      card.innerHTML = `
+        <div class="af-head">
+          <span class="status-dot ${isPaused ? 'paused' : ''}"></span>
+          <strong style="flex:1">${esc(a.name || name)}</strong>
+          <span class="tabular" style="color:var(--secondary)">${a.today_count != null ? a.today_count : 0} today</span>
+          <div class="switch ${isPaused ? '' : 'on'} ${lock ? 'locked' : ''}" title="Change via Telegram" data-readonly="1"></div>
+        </div>
+        <div class="af-decisions"></div>
+        <button type="button" class="link af-settings" data-agent="${name}" style="color:var(--blue);font-size:14px;min-height:44px">Settings</button>
+        <div class="af-note">Pause / resume via Telegram on plan B</div>`;
+      const box = card.querySelector('.af-decisions');
+      if (!dec.length) {
+        box.innerHTML = '<div class="empty-note" style="padding:8px 0;text-align:left">No decisions yet</div>';
+      } else {
+        dec.slice(0, 20).forEach((d) => {
+          const row = document.createElement('div');
+          row.className = 'decision-row';
+          const href = d.coin_url || '#';
+          row.innerHTML = `<span class="tabular" style="color:var(--tertiary)">${esc(fmtTime(d.ts))}</span>
+            <a href="${esc(href)}" target="_blank" rel="noopener">${esc(d.coin || d.mint || '')}</a>
+            <span>${esc(d.verdict || '')}</span>
+            <span style="color:var(--secondary);flex:1">${esc(d.reason || '')}</span>`;
+          box.appendChild(row);
+        });
+      }
+      card.querySelector('.af-settings').addEventListener('click', () => {
+        switchTab('account');
+        const g = document.getElementById('settings-' + name);
+        if (g) g.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+      root.appendChild(card);
     });
   }
 
-  function updateAccount(mode) {
-    document.getElementById('acct-mode').textContent = mode || 'PAPER';
-    document.getElementById('acct-link').textContent = load(PATH_KEY) ? 'Connected' : 'Not connected';
-    document.getElementById('acct-token').textContent = load(TOKEN_KEY) ? 'Saved' : 'Not set';
-  }
-
-  function renderAgents(agents) {
-    var list = document.getElementById('agent-list');
-    list.replaceChildren();
-    if (!agents || !agents.length) {
-      var empty = document.createElement('p');
-      empty.className = 'muted';
-      empty.textContent = 'No agents';
-      list.appendChild(empty);
+  function renderActivity() {
+    const list = $('#activity-list');
+    if (!list) return;
+    const rows = (state.activity && state.activity.rows) || [];
+    list.innerHTML = '';
+    if (!rows.length) {
+      list.innerHTML = '<div class="empty-note">Nothing yet tonight</div>';
       return;
     }
-    agents.forEach(function (agent) {
-      var card = document.createElement('article');
-      card.className = 'card agent';
-      var name = document.createElement('div');
-      name.className = 'agent-name';
-      name.textContent = agent.name || agent.id || 'Agent';
-      var status = document.createElement('div');
-      var kind = statusKind(agent.status);
-      status.className = 'status' + (kind ? ' status-' + kind : '');
-      status.textContent = agent.status || 'idle';
-      card.appendChild(name);
-      card.appendChild(status);
-      list.appendChild(card);
+    rows.forEach((r) => list.appendChild(buildActRow(r)));
+  }
+
+  function renderAccount() {
+    const a = state.account;
+    if (!a) return;
+    paperBadge(a.mode === 'PAPER');
+    const mode = $('#acct-mode');
+    if (mode) {
+      mode.innerHTML = `<span class="${a.mode === 'PAPER' ? 'on' : ''}">PAPER</span><span class="${a.mode === 'LIVE' ? 'on' : ''}">LIVE</span>`;
+    }
+    const stack = $('#acct-stack');
+    if (stack) stack.textContent = fmtMoney(a.stack);
+    const profile = $('#acct-profile');
+    if (profile) {
+      profile.href = a.profile_url || '#';
+      profile.querySelector('.value').textContent = a.fomo_handle ? '@' + a.fomo_handle : '—';
+    }
+    const invite = $('#acct-invite');
+    if (invite) invite.dataset.url = a.signup_url || '';
+    const tg = $('#acct-telegram');
+    if (tg) tg.textContent = a.telegram_connected ? 'Connected' : 'Not connected';
+    const note = $('#web-push-note');
+    if (note) note.textContent = a.web_push_note || 'web push not available on plan B, Telegram only';
+    const planNote = $('#planb-settings-note');
+    if (planNote) planNote.textContent = 'Settings are read-only here. Change them via Telegram.';
+
+    const root = $('#settings-groups');
+    if (root && a.settings) {
+      root.innerHTML = '';
+      Object.keys(a.settings).forEach((group) => {
+        const wrap = document.createElement('div');
+        wrap.className = 'settings-group';
+        wrap.id = 'settings-' + group;
+        wrap.innerHTML = `<h3>${esc(group)}</h3>`;
+        const entries = a.settings[group] || {};
+        Object.keys(entries).forEach((k) => {
+          const row = document.createElement('div');
+          row.className = 'set-row';
+          const short = k.indexOf('.') >= 0 ? k.slice(k.indexOf('.') + 1) : k;
+          row.innerHTML = `<span class="sk">${esc(short)}</span><span class="sv mono">${esc(String(entries[k]))}</span>`;
+          wrap.appendChild(row);
+        });
+        root.appendChild(wrap);
+      });
+    }
+  }
+
+  async function openCoin(mint) {
+    const ov = $('#coin-overlay');
+    ov.classList.add('open');
+    ov.dataset.mint = mint;
+    $('#coin-body').innerHTML = '<div class="skel" style="height:200px;margin:16px"></div>';
+    try {
+      const coin = await fetchJson(`coin/${mint}.json`);
+      paintCoin(coin);
+    } catch (e) {
+      $('#coin-body').innerHTML = '<div class="empty-note">Could not load coin</div>';
+    }
+  }
+
+  function paintCoin(coin) {
+    const body = $('#coin-body');
+    const age = coin.age_min != null ? (coin.age_min >= 60 ? Math.floor(coin.age_min / 60) + 'h old' : coin.age_min + 'm old') : '';
+    const pnl = coin.pnl_pct_since_entry;
+    const pnlHtml = pnl == null ? '' :
+      `<div class="coin-pnl ${pnl >= 0 ? 'today-up' : 'today-down'}">${pnl >= 0 ? '▲' : '▼'} ${fmtPct(Math.abs(pnl), false)} since entry</div>`;
+    const st = coin.stats || {};
+    const pos = coin.position;
+    const exitHtml = pos ? `
+      <div class="exit-card">
+        <h4>Your position · ${fmtMoney(pos.size_usd)} in · Executor</h4>
+        <div class="exit-line"><span>Stop line</span><strong class="tabular">${pos.stop_line != null ? pos.stop_line.toPrecision(6) : '—'}</strong></div>
+        <div class="exit-line"><span>Trail line</span><strong class="tabular">${pos.trail_line != null ? pos.trail_line.toPrecision(6) : '—'}</strong></div>
+        <div class="exit-line"><span>Timeout left</span><strong class="tabular">${pos.timeout_left_s != null ? Math.round(pos.timeout_left_s / 60) + 'm' : '—'}</strong></div>
+      </div>` : '';
+    const fomoLabel = pos ? 'Sell on FOMO' : 'Buy on FOMO';
+    const fomoHref = coin.coin_url || '#';
+    body.innerHTML = `
+      <div class="screen-scroll">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <div style="font-size:22px;font-weight:700">${esc(coin.name || coin.symbol || coin.mint)}</div>
+          <span class="paper-pill ${state.state && state.state.mode === 'PAPER' ? '' : 'hidden'}">PAPER</span>
+          ${coin.shield ? `<span class="shield-chip">${esc(coin.shield)}</span>` : ''}
+        </div>
+        <div class="coin-meta">${esc(coin.symbol || '')} · ${esc(coin.chain || 'Solana')} · ${esc(age)}</div>
+        <div class="coin-price tabular">${coin.price != null ? Number(coin.price).toPrecision(6) : '—'}</div>
+        ${pnlHtml}
+        <div class="candle-wrap"><canvas id="coin-candles"></canvas></div>
+        <div class="stats-grid">
+          <div class="stat"><div class="sl">Market cap</div><div class="sv">${st.market_cap != null ? fmtMoney(st.market_cap) : 'n/a'}</div></div>
+          <div class="stat"><div class="sl">Liquidity</div><div class="sv">${st.liquidity_usd != null ? fmtMoney(st.liquidity_usd) : 'n/a'}</div></div>
+          <div class="stat"><div class="sl">24h volume</div><div class="sv">${st.volume_h24 != null ? fmtMoney(st.volume_h24) : 'n/a'}</div></div>
+          <div class="stat"><div class="sl">Holders</div><div class="sv">${st.holders != null ? st.holders : 'n/a'}</div></div>
+        </div>
+        ${exitHtml}
+        <a class="fomo-btn" href="${esc(fomoHref)}" target="_blank" rel="noopener">${esc(fomoLabel)}</a>
+      </div>`;
+    requestAnimationFrame(() => {
+      const c = $('#coin-candles');
+      if (c && window.DeskCharts) {
+        DeskCharts.drawCandles(c, {
+          candles: coin.candles || [],
+          exitLine: pos ? pos.exit_line : null,
+        });
+      }
     });
   }
 
-  function renderActivity(rows) {
-    var list = document.getElementById('activity-list');
-    list.replaceChildren();
-    if (!rows || !rows.length) {
-      var empty = document.createElement('p');
-      empty.className = 'muted';
-      empty.textContent = 'No activity yet';
-      list.appendChild(empty);
+  async function openAudit(mint) {
+    const ov = $('#audit-overlay');
+    ov.classList.add('open');
+    $('#audit-body').innerHTML = '<div class="skel" style="height:200px;margin:16px"></div>';
+    try {
+      const audit = await fetchJson(`audit/${mint}.json`);
+      await paintAudit(audit);
+    } catch (e) {
+      $('#audit-body').innerHTML = '<div class="empty-note">No coin taken apart yet</div>';
+    }
+  }
+
+  async function paintAudit(audit) {
+    const body = $('#audit-body');
+    const layers = audit.layers || [];
+    const discs = layers.map((l, i) =>
+      `<div class="disc" data-i="${i}" id="disc-${i}">${esc(l.name || ('Layer ' + l.n))}</div>`
+    ).join('');
+    const vals = layers.map((l) =>
+      `<div class="audit-val-row"><span class="vn">${esc(l.name || '')}</span><span class="mono">${esc(l.not_checked ? 'not checked' : (l.value || ''))}</span></div>`
+    ).join('');
+    const enabled = state.state && state.state.settings && state.state.settings.auditor_enabled;
+    body.innerHTML = `
+      <div class="screen-scroll">
+        <div style="font-size:20px;font-weight:700;margin-bottom:4px">${esc(audit.name || audit.mint)}</div>
+        <div class="audit-discs" id="audit-discs">${discs}</div>
+        <div class="audit-status">${esc(audit.status || '')}</div>
+        <div class="audit-sub">${audit.passed ? 'Sent to Executor' : (audit.reason ? "Grok Bot won't buy " + esc(audit.name || '') : '')}</div>
+        <div class="audit-values">${vals}</div>
+        <div class="toggle-row"><span>Take apart before buying</span>
+          <div class="switch ${enabled ? 'on' : ''}" title="Change via Telegram"></div>
+        </div>
+        <div class="af-note">Toggle via Telegram on plan B</div>
+        <a class="fomo-btn" href="${esc(audit.coin_url || '#')}" target="_blank" rel="noopener">Open on FOMO</a>
+      </div>`;
+    // beam animation — only reveal results the server sent
+    const reduced = window.DeskCharts && DeskCharts.prefersReduced();
+    for (let i = 0; i < layers.length; i++) {
+      const disc = document.getElementById('disc-' + i);
+      if (!disc) continue;
+      const L = layers[i];
+      if (L.not_checked || L.pass == null) {
+        disc.textContent = 'not checked';
+        continue;
+      }
+      if (!reduced) {
+        disc.classList.add('beam');
+        await wait(350);
+        disc.classList.remove('beam');
+      }
+      disc.classList.add(L.pass ? 'pass' : 'fail');
+      disc.textContent = (L.pass ? '✓ ' : '✕ ') + (L.name || '');
+      if (!reduced) await wait(150);
+      // if fail, remaining stay not checked visually already
+      if (!L.pass) break;
+    }
+  }
+
+  function wait(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+  function closeOverlays() {
+    $$('.overlay-screen').forEach((el) => el.classList.remove('open'));
+  }
+
+  function switchTab(tab) {
+    state.tab = tab;
+    $$('.screen').forEach((s) => s.classList.toggle('active', s.dataset.tab === tab));
+    $$('.tabbar button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
+    closeOverlays();
+    if (tab === 'agents') renderAgents();
+    if (tab === 'activity') renderActivity();
+    if (tab === 'account') renderAccount();
+    if (tab === 'home') renderHome();
+  }
+
+  function openAgentsTab(focus) {
+    switchTab('agents');
+    if (focus) {
+      const el = document.getElementById('agent-full-' + focus);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }
+
+  /* ---------- polling ---------- */
+
+  async function refreshAll() {
+    try {
+      const [st, ch, act, acct, ev] = await Promise.all([
+        fetchJson('state.json'),
+        fetchJson(`chart/${state.range}.json`),
+        fetchJson('activity.json'),
+        fetchJson('account.json'),
+        fetchJson('events.json').catch(() => ({ events: [] })),
+      ]);
+      state.state = st;
+      state.chart = ch;
+      state.activity = act;
+      state.account = acct;
+      state.events = ev;
+      state.lastOkAt = st.updated_at || new Date().toISOString();
+      state.offline = false;
+      showError(false);
+
+      // agent decision files
+      await Promise.all(['scanner', 'auditor', 'analyst', 'executor', 'risk'].map(async (n) => {
+        try { state.agents[n] = await fetchJson(`agents/${n}.json`); }
+        catch (_) { state.agents[n] = state.agents[n] || { decisions: [] }; }
+      }));
+
+      if (state.tab === 'home') renderHome();
+      else if (state.tab === 'agents') renderAgents();
+      else if (state.tab === 'activity') renderActivity();
+      else if (state.tab === 'account') renderAccount();
+
+      // unread bell from events
+      try {
+        const seen = Number(localStorage.getItem(LS_UNREAD + '_seq') || 0);
+        const maxSeq = Math.max(0, ...((ev.events || []).map((e) => e.seq || 0)));
+        const bell = $('#bell-dot');
+        if (bell) bell.classList.toggle('on', maxSeq > seen);
+      } catch (_) {}
+    } catch (e) {
+      state.offline = true;
+      showError(true);
+    }
+  }
+
+  function bindUi() {
+    $$('.tabbar button').forEach((b) => b.addEventListener('click', () => switchTab(b.dataset.tab)));
+    $('#nav-avatar') && $('#nav-avatar').addEventListener('click', () => switchTab('account'));
+    $('#nav-title') && $('#nav-title').addEventListener('click', () => switchTab('account'));
+    $('#see-all-activity') && $('#see-all-activity').addEventListener('click', () => switchTab('activity'));
+    $$('.range-switch button').forEach((b) => {
+      b.addEventListener('click', async () => {
+        state.range = b.dataset.range;
+        $$('.range-switch button').forEach((x) => x.classList.toggle('on', x === b));
+        try {
+          state.chart = await fetchJson(`chart/${state.range}.json`);
+          renderHome();
+        } catch (_) {}
+      });
+    });
+    $('#coin-back') && $('#coin-back').addEventListener('click', closeOverlays);
+    $('#audit-back') && $('#audit-back').addEventListener('click', closeOverlays);
+    $('#acct-invite') && $('#acct-invite').addEventListener('click', async (e) => {
+      e.preventDefault();
+      const url = e.currentTarget.dataset.url;
+      if (!url) return;
+      if (navigator.share) {
+        try { await navigator.share({ url, title: 'FOMO' }); return; } catch (_) {}
+      }
+      try {
+        await navigator.clipboard.writeText(url);
+        e.currentTarget.querySelector('.value').textContent = 'Link copied';
+      } catch (_) {}
+    });
+    $('#nav-bell') && $('#nav-bell').addEventListener('click', () => {
+      try {
+        const maxSeq = Math.max(0, ...(((state.events && state.events.events) || []).map((e) => e.seq || 0)));
+        localStorage.setItem(LS_UNREAD + '_seq', String(maxSeq));
+      } catch (_) {}
+      $('#bell-dot') && $('#bell-dot').classList.remove('on');
+    });
+    const search = $('#nav-search');
+    if (search) {
+      search.addEventListener('keydown', async (e) => {
+        if (e.key !== 'Enter') return;
+        const q = search.value.trim();
+        if (!q) return;
+        // try mint directly, else scan activity/state feed
+        const rows = (state.activity && state.activity.rows) || [];
+        const hit = rows.find((r) =>
+          (r.mint && r.mint === q) ||
+          (r.title && r.title.toLowerCase().includes(q.toLowerCase()))
+        );
+        if (hit && hit.mint) {
+          if (hit.kind === 'rejected') openAudit(hit.mint);
+          else openCoin(hit.mint);
+          return;
+        }
+        const feed = (((state.state || {}).agents || {}).scanner || {}).feed || [];
+        const f = feed.find((x) =>
+          (x.mint && x.mint === q) ||
+          (x.name && x.name.toLowerCase().includes(q.toLowerCase()))
+        );
+        if (f && f.mint) openCoin(f.mint);
+      });
+    }
+  }
+
+  async function boot() {
+    if (document.body.dataset.role === 'launcher') {
+      if (!maybeRedirectFromRoot()) {
+        document.body.innerHTML = '<div style="padding:40px;font-family:-apple-system;background:#000;color:#fff;min-height:100vh">Open with <span class="mono">#d=…</span> once to unlock the desk.</div>';
+      }
       return;
     }
-    var card = document.createElement('div');
-    card.className = 'card activity-card';
-    rows.forEach(function (row) {
-      var item = document.createElement('div');
-      item.className = 'activity-row';
-      var main = document.createElement('div');
-      main.className = 'activity-main';
-      var title = document.createElement('div');
-      title.className = 'activity-title';
-      title.textContent = row.title || row.text || row.symbol || 'Trade';
-      main.appendChild(title);
-      var detailText = row.detail || row.note || whenLabel(row.time || row.t || row.ts);
-      if (detailText) {
-        var detail = document.createElement('div');
-        detail.className = 'activity-detail nums';
-        detail.textContent = detailText;
-        main.appendChild(detail);
-      }
-      item.appendChild(main);
-      if (row.amount != null || row.pnl != null) {
-        var n = Number(row.amount != null ? row.amount : row.pnl);
-        var amount = document.createElement('div');
-        amount.className = 'amount nums' + (n < 0 ? ' neg' : n > 0 ? ' pos' : '');
-        amount.textContent = signedMoney(n);
-        item.appendChild(amount);
-      }
-      card.appendChild(item);
-    });
-    list.appendChild(card);
-  }
-
-  function showDisconnected() {
-    document.getElementById('balance').textContent = '—';
-    document.getElementById('balance').classList.remove('neg');
-    var sub = document.getElementById('balance-sub');
-    sub.textContent = 'Open the desk link to load this account';
-    sub.classList.add('warn');
-    document.getElementById('mode-pill').textContent = 'PAPER';
-    if (chart) chart.setPoints([]);
-    renderAgents([]);
-    renderActivity([]);
-    updateAccount('PAPER');
-    setLive('bad');
-    setStatus('Add the #d= link from Grok Bot', true);
-  }
-
-  function renderState(state) {
-    var mode = state && state.mode ? String(state.mode) : 'PAPER';
-    var balance = state ? Number(state.balance) : NaN;
-    var balanceEl = document.getElementById('balance');
-    balanceEl.textContent = money(balance);
-    balanceEl.classList.toggle('neg', isFinite(balance) && balance < 0);
-    var sub = document.getElementById('balance-sub');
-    sub.textContent = mode === 'PAPER' ? 'Paper balance' : mode;
-    sub.classList.remove('warn');
-    document.getElementById('mode-pill').textContent = mode;
-    renderAgents(state && state.agents);
-    updateAccount(mode);
-  }
-
-  function pointsOf(chartJson) {
-    if (Array.isArray(chartJson)) return chartJson;
-    if (chartJson && Array.isArray(chartJson.points)) return chartJson.points;
-    return [];
-  }
-
-  function rowsOf(activityJson) {
-    if (Array.isArray(activityJson)) return activityJson;
-    if (activityJson && Array.isArray(activityJson.rows)) return activityJson.rows;
-    return [];
-  }
-
-  function loadJson(url) {
-    return fetch(url, { cache: 'no-store' }).then(function (res) {
-      if (!res.ok) throw new Error(String(res.status));
-      return res.json();
-    });
-  }
-
-  function poll() {
-    if (polling) return;
-    var path = activePath || load(PATH_KEY);
+    const path = resolvePath();
     if (!path) {
-      showDisconnected();
+      document.body.innerHTML = '<div style="padding:40px;font-family:-apple-system;background:#000;color:#fff">Missing data path. Open the desk link with #d=…</div>';
       return;
     }
-    polling = true;
-    var root = siteBase() + 'd/' + encodeURIComponent(path) + '/';
-    var bust = Date.now();
-    Promise.all([
-      loadJson(root + 'state.json?v=' + bust),
-      loadJson(root + 'chart.json?v=' + bust),
-      loadJson(root + 'activity.json?v=' + bust)
-    ]).then(function (parts) {
-      renderState(parts[0]);
-      if (chart) chart.setPoints(pointsOf(parts[1]));
-      renderActivity(rowsOf(parts[2]));
-      setLive('on');
-      setStatus('Updated ' + clock(), false);
-    }).catch(function () {
-      setLive('bad');
-      setStatus('Could not refresh', true);
-    }).then(function () {
-      polling = false;
+    persistPath(path);
+    state.path = path;
+    state.dataBase = dataBaseFor(path);
+    bindUi();
+    switchTab('home');
+    await refreshAll();
+    setInterval(refreshAll, POLL_MS);
+    setInterval(() => {
+      if (state.offline) {
+        state.retryIn = Math.max(1, state.retryIn - 1);
+        showError(true);
+        if (state.retryIn <= 0) { state.retryIn = 5; refreshAll(); }
+      } else state.retryIn = 5;
+    }, 1000);
+    window.addEventListener('resize', () => {
+      if (state.tab === 'home') renderHome();
     });
   }
 
-  function selectTab(id) {
-    tabs.forEach(function (item) {
-      var selected = item.id === id;
-      var tab = document.getElementById(item.tab);
-      var panel = document.getElementById(item.panel);
-      tab.setAttribute('aria-selected', selected ? 'true' : 'false');
-      tab.tabIndex = selected ? 0 : -1;
-      panel.hidden = !selected;
-    });
-    if (id === 'home' && chart) chart.draw();
-  }
+  // expose for deep links / proof harness
+  window.openCoin = openCoin;
+  window.openAudit = openAudit;
+  window.switchTab = switchTab;
+  window.renderActivity = renderActivity;
+  window.state = state;
 
-  function bindTabs() {
-    var nav = document.querySelector('.tabbar');
-    tabs.forEach(function (item) {
-      document.getElementById(item.tab).addEventListener('click', function () {
-        selectTab(item.id);
-      });
-    });
-    nav.addEventListener('keydown', function (event) {
-      var order = tabs.map(function (item) { return document.getElementById(item.tab); });
-      var index = order.indexOf(document.activeElement);
-      if (index < 0) return;
-      var next = index;
-      if (event.key === 'ArrowRight') next = (index + 1) % order.length;
-      else if (event.key === 'ArrowLeft') next = (index - 1 + order.length) % order.length;
-      else return;
-      event.preventDefault();
-      order[next].focus();
-      order[next].click();
-    });
-  }
-
-  function registerWorker() {
-    if (!('serviceWorker' in navigator)) return;
-    var script = segmentFromPathname() ? '../../sw.js' : './sw.js';
-    try {
-      navigator.serviceWorker.register(script).catch(function () {});
-    } catch (err) {}
-  }
-
-  readLaunchHash();
-  var activePath = resolveDataPath();
-  if (activePath) store(PATH_KEY, activePath);
-  if (activePath && !window.navigator.standalone && segmentFromPathname() !== activePath) {
-    location.replace(siteBase() + 'd/' + encodeURIComponent(activePath) + '/');
-    return;
-  }
-
-  chart = new DeskChart(document.getElementById('chart'), document.getElementById('chart-empty'));
-  bindTabs();
-  updateAccount('PAPER');
-  poll();
-  setInterval(poll, POLL_MS);
-  registerWorker();
+  document.addEventListener('DOMContentLoaded', boot);
 })();
