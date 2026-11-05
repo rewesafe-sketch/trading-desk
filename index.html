@@ -7,12 +7,15 @@
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <meta name="theme-color" content="#000000" />
   <title>Grok Bot</title>
-  <!-- no manifest link on root: iOS Home Screen uses path launch page -->
   <style>
     html, body { margin: 0; background: #000; color: #fff; font-family: -apple-system, system-ui, sans-serif; }
   </style>
 </head>
 <body data-role="launcher">
-  <script src="app.js?v=4"></script>
+  <div style="padding:40px;min-height:100vh">Open your new private desk link</div>
+  <script>
+    try { localStorage.removeItem('desk_data_path'); } catch (e) {}
+    if (location.hash) history.replaceState(null, '', location.pathname + location.search);
+  </script>
 </body>
 </html>

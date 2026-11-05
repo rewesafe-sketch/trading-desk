@@ -33,7 +33,7 @@
     return h === 'localhost' || h === '127.0.0.1' || h === '0.0.0.0';
   }
 
-  /** Resolve DATA_PATH: pathname /trading-desk/d/<path>/ → #d= → localStorage */
+  /** Resolve DATA_PATH from the page URL only. Never restore a stored path. */
   function resolvePath() {
     const parts = location.pathname.split('/').filter(Boolean);
     // expect …/trading-desk/d/<path>/ or …/d/<path>/
@@ -43,33 +43,11 @@
     }
     const hash = new URLSearchParams((location.hash || '').replace(/^#/, ''));
     if (hash.get('d')) return hash.get('d');
-    try { return localStorage.getItem(LS_PATH); } catch (_) { return null; }
+    return null;
   }
 
   function persistPath(p) {
     try { localStorage.setItem(LS_PATH, p); } catch (_) {}
-  }
-
-  /** Root launcher: #d= → /trading-desk/d/<path>/ */
-  function maybeRedirectFromRoot() {
-    const onPathPage = /\/d\/[^/]+\/?$/.test(location.pathname) || /\/d\/[^/]+\/index\.html$/.test(location.pathname);
-    if (onPathPage) return false;
-    const hash = new URLSearchParams((location.hash || '').replace(/^#/, ''));
-    const d = hash.get('d') || (function () { try { return localStorage.getItem(LS_PATH); } catch (_) { return null; } })();
-    if (!d) return false;
-    persistPath(d);
-    // Build /trading-desk/d/<path>/ under current origin
-    let base = location.pathname;
-    if (!base.endsWith('/')) base = base.replace(/[^/]+$/, '');
-    // if at /trading-desk/ or /trading-desk/index.html
-    if (!/\/trading-desk\/?$/.test(location.pathname) && !location.pathname.endsWith('/trading-desk/index.html')) {
-      // local proof may serve from /
-      const target = `/d/${encodeURIComponent(d)}/`;
-      location.replace(target);
-      return true;
-    }
-    location.replace(`/trading-desk/d/${encodeURIComponent(d)}/`);
-    return true;
   }
 
   function dataBaseFor(path) {
@@ -640,14 +618,16 @@
 
   async function boot() {
     if (document.body.dataset.role === 'launcher') {
-      if (!maybeRedirectFromRoot()) {
-        document.body.innerHTML = '<div style="padding:40px;font-family:-apple-system;background:#000;color:#fff;min-height:100vh">Open with <span class="mono">#d=…</span> once to unlock the desk.</div>';
+      try { localStorage.removeItem(LS_PATH); } catch (_) {}
+      if (location.hash) {
+        history.replaceState(null, '', location.pathname + location.search);
       }
+      document.body.innerHTML = '<div style="padding:40px;font-family:-apple-system;background:#000;color:#fff;min-height:100vh">Open your new private desk link</div>';
       return;
     }
     const path = resolvePath();
     if (!path) {
-      document.body.innerHTML = '<div style="padding:40px;font-family:-apple-system;background:#000;color:#fff">Missing data path. Open the desk link with #d=…</div>';
+      document.body.innerHTML = '<div style="padding:40px;font-family:-apple-system;background:#000;color:#fff">Open your new private desk link</div>';
       return;
     }
     persistPath(path);
